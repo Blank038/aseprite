@@ -654,12 +654,13 @@ private:
 
     m_loaded = true;
 
-    char buf[32];
+    std::string buf;
     int n = get_config_int("shades", "count", 0);
     n = std::clamp(n, 0, 256);
     for (int i=0; i<n; ++i) {
-      sprintf(buf, "shade%d", i);
-      Shade shade = shade_from_string(get_config_string("shades", buf, ""));
+      buf = fmt::format("shade{}", i);
+      Shade shade = shade_from_string(
+        get_config_string("shades", buf.c_str(), ""));
       if (shade.size() >= 2)
         m_shades.push_back(shade);
     }
@@ -669,12 +670,13 @@ private:
     if (!m_loaded)
       return;
 
-    char buf[32];
+    std::string buf;
     int n = int(m_shades.size());
     set_config_int("shades", "count", n);
     for (int i=0; i<n; ++i) {
-      sprintf(buf, "shade%d", i);
-      set_config_string("shades", buf, shade_to_string(m_shades[i]).c_str());
+      buf = fmt::format("shade{}", i);
+      set_config_string("shades", buf.c_str(),
+                        shade_to_string(m_shades[i]).c_str());
     }
   }
 
@@ -1164,22 +1166,13 @@ public:
 
     if (!m_popup.get())
       m_popup.reset(new DynamicsPopup(this));
-    auto activeTool = App::instance()->activeTool();
-    m_popup->loadDynamicsPref();
-    m_dynamics = m_popup->getDynamics();
     m_sameInAllTools = m_popup->sharedSettings();
+    m_popup->loadDynamicsPref(m_sameInAllTools);
+    m_dynamics = m_popup->getDynamics();
     m_popup->Close.connect(
       [this](CloseEvent&) {
         deselectItems();
-        auto activeTool = App::instance()->activeTool();
-        m_dynamics = m_popup->getDynamics();
-        m_sameInAllTools = m_popup->sharedSettings();
-        if (m_sameInAllTools) {
-          for (Tool* tool : *App::instance()->toolBox())
-            saveDynamicsPref(tool);
-        }
-        else
-          saveDynamicsPref(activeTool);
+        saveDynamicsPref();
       });
 
     m_popup->refreshVisibility();
@@ -1194,9 +1187,14 @@ public:
     m_popup->setHotRegion(gfx::Region(m_popup->boundsOnScreen()));
   }
 
-  const tools::DynamicsOptions& getDynamics() const {
-    if (m_popup && m_popup->isVisible())
+  const tools::DynamicsOptions& getDynamics() {
+    if (m_popup && m_popup->isVisible()) {
       m_dynamics = m_popup->getDynamics();
+    }
+    else {
+      // Load dynamics just in case that the active tool has changed.
+      loadDynamicsPref();
+    }
     return m_dynamics;
   }
 
@@ -1206,8 +1204,15 @@ public:
       m_popup->setOptionsGridVisibility(state);
   }
 
-  void saveDynamicsPref(Tool* tool) {
+  void saveDynamicsPref() {
+    m_sameInAllTools = m_popup->sharedSettings();
+    Preferences::instance().shared.shareDynamics(m_sameInAllTools);
+    tools::Tool* tool = nullptr;
+    if (!m_sameInAllTools)
+      tool = App::instance()->activeTool();
+
     auto& dynaPref = Preferences::instance().tool(tool).dynamics;
+    m_dynamics = m_popup->getDynamics();
     dynaPref.stabilizer(m_dynamics.stabilizer);
     dynaPref.stabilizerFactor(m_dynamics.stabilizerFactor);
     dynaPref.size(m_dynamics.size);
@@ -1220,13 +1225,16 @@ public:
     dynaPref.maxPressureThreshold(m_dynamics.maxPressureThreshold);
     dynaPref.maxVelocityThreshold(m_dynamics.maxVelocityThreshold);
     dynaPref.colorFromTo(m_dynamics.colorFromTo);
-    dynaPref.matrixIndex(m_popup->ditheringIndex());
-    Preferences::instance().shared.shareDynamics(m_sameInAllTools);
+    dynaPref.matrixName(m_popup->ditheringMatrixName());
   }
 
   void loadDynamicsPref() {
-    auto& dynaPref = Preferences::instance()
-      .tool(App::instance()->activeTool()).dynamics;
+    m_sameInAllTools = Preferences::instance().shared.shareDynamics();
+    tools::Tool* tool = nullptr;
+    if (!m_sameInAllTools)
+      tool = App::instance()->activeTool();
+
+    auto& dynaPref = Preferences::instance().tool(tool).dynamics;
     m_dynamics.stabilizer = dynaPref.stabilizer();
     m_dynamics.stabilizerFactor = dynaPref.stabilizerFactor();
     m_dynamics.size = dynaPref.size();
@@ -1241,11 +1249,10 @@ public:
     m_dynamics.colorFromTo = dynaPref.colorFromTo();
 
     DitheringSelector matrixSel(DitheringSelector::SelectMatrix);
-    matrixSel.setSelectedItemIndex(dynaPref.matrixIndex());
+    matrixSel.setSelectedItemIndex(matrixSel.findItemIndex(
+      dynaPref.matrixName()));
     render::DitheringMatrix matrix(matrixSel.ditheringMatrix());
     m_dynamics.ditheringMatrix = matrix;
-
-    m_sameInAllTools = Preferences::instance().shared.shareDynamics();
   }
 
 private:
@@ -2167,7 +2174,7 @@ void ContextBar::updateForTool(tools::Tool* tool)
   // Show/Hide fields
   m_zoomButtons->setVisible(needZoomButtons(tool));
   m_brushBack->setVisible(supportOpacity && hasImageBrush && !withDithering);
-  m_brushType->setVisible(supportOpacity && (!isFloodfill || (isFloodfill && hasImageBrush && !withDithering)));
+  m_brushType->setVisible(supportOpacity && (!isFloodfill || (isFloodfill && !withDithering)));
   m_brushSize->setVisible(supportOpacity && !isFloodfill && !hasImageBrush);
   m_brushAngle->setVisible(supportOpacity && !isFloodfill && !hasImageBrush && hasBrushWithAngle);
   m_brushPatternField->setVisible(supportOpacity && hasImageBrush && !withDithering);
